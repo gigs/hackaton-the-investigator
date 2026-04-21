@@ -105,7 +105,7 @@ pnpm build            # tsc compiles (will fail until src/index.ts exists — ex
 
 ---
 
-### - [ ] 1.2 — Config
+### - [x] 1.2 — Config
 
 Validate environment variables at startup.
 
