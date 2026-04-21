@@ -14,6 +14,11 @@ import {
 } from "../linear/activities.js";
 import { getClient, InvestigatorError } from "./session.js";
 import { classifyAnthropicError } from "./errors.js";
+import type { SessionContext } from "../linear/types.js";
+import {
+  updateIssuePlan,
+  addClarificationComment,
+} from "../linear/actions.js";
 
 const INITIAL_TIMEOUT_MS = 30_000;
 const KEEPALIVE_CHECK_MS = 30_000;
@@ -42,10 +47,12 @@ export async function mapAndEmitEvents(
   linearClient: LinearClient,
   linearSessionId: string,
   anthropicSessionId: string,
+  sessionCtx: SessionContext,
 ): Promise<void> {
   const anthropic = getClient();
   const planSteps: PlanStep[] = [];
   const toolIdToStepIndex = new Map<string, number>();
+  const pendingCustomTools = new Map<string, { name: string; input: Record<string, unknown>; stepIndex: number }>();
 
   let lastEventTime = Date.now();
   let receivedFirstEvent = false;
@@ -240,27 +247,97 @@ export async function mapAndEmitEvents(
         }
 
         if (stop_reason.type === "requires_action") {
+          const customToolIds: string[] = [];
+          const confirmationIds: string[] = [];
+
           for (const eventId of stop_reason.event_ids) {
-            await anthropic.beta.sessions.events.send(
+            if (pendingCustomTools.has(eventId)) {
+              customToolIds.push(eventId);
+            } else {
+              confirmationIds.push(eventId);
+            }
+          }
+
+          for (const toolId of customToolIds) {
+            const tool = pendingCustomTools.get(toolId)!;
+            pendingCustomTools.delete(toolId);
+
+            let resultContent: string;
+            let isError = false;
+
+            if (tool.name === "plan_ready") {
+              const raw = tool.input.plan ?? tool.input.content ?? tool.input.description;
+              const content = typeof raw === "string" ? raw : JSON.stringify(raw ?? tool.input);
+              const rawTitle = tool.input.title;
+              const title = typeof rawTitle === "string" && rawTitle ? rawTitle : undefined;
+              const result = await updateIssuePlan(linearClient, sessionCtx.issueId, content, title);
+              if (result.ok) {
+                resultContent = "Issue description updated successfully.";
+                planSteps[tool.stepIndex].status = "completed";
+              } else {
+                resultContent = `Failed to update issue description: ${result.error}`;
+                planSteps[tool.stepIndex].status = "canceled";
+                isError = true;
+              }
+            } else if (tool.name === "requires_clarification") {
+              const raw = tool.input.clarification ?? tool.input.message ?? tool.input.question;
+              const message = typeof raw === "string" ? raw : JSON.stringify(raw ?? tool.input);
+              const result = await addClarificationComment(linearClient, sessionCtx.issueId, sessionCtx.triggerUserId, message);
+              if (result.ok) {
+                resultContent = "Clarification comment posted on the issue.";
+                planSteps[tool.stepIndex].status = "completed";
+              } else {
+                resultContent = `Failed to post clarification comment: ${result.error}`;
+                planSteps[tool.stepIndex].status = "canceled";
+                isError = true;
+              }
+            } else {
+              resultContent = `Unknown custom tool: ${tool.name}`;
+              planSteps[tool.stepIndex].status = "canceled";
+              isError = true;
+            }
+
+            await pushPlan();
+
+            await anthropic.beta.sessions.events.send(anthropicSessionId, {
+              events: [
+                {
+                  type: "user.custom_tool_result",
+                  custom_tool_use_id: toolId,
+                  content: [{ type: "text", text: resultContent }],
+                  is_error: isError,
+                },
+              ],
+            });
+            console.log(
+              "Custom tool result sent: name=%s toolId=%s isError=%s session=%s",
+              tool.name,
+              toolId,
+              isError,
               anthropicSessionId,
-              {
-                events: [
-                  {
-                    type: "user.tool_confirmation",
-                    tool_use_id: eventId,
-                    result: "deny",
-                    deny_message:
-                      "Tool confirmations are not permitted in this environment.",
-                  },
-                ],
-              },
             );
           }
-          console.log(
-            "Auto-denied %d tool(s): session=%s",
-            stop_reason.event_ids.length,
-            anthropicSessionId,
-          );
+
+          for (const eventId of confirmationIds) {
+            await anthropic.beta.sessions.events.send(anthropicSessionId, {
+              events: [
+                {
+                  type: "user.tool_confirmation",
+                  tool_use_id: eventId,
+                  result: "deny",
+                  deny_message:
+                    "Tool confirmations are not permitted in this environment.",
+                },
+              ],
+            });
+          }
+          if (confirmationIds.length > 0) {
+            console.log(
+              "Auto-denied %d tool(s): session=%s",
+              confirmationIds.length,
+              anthropicSessionId,
+            );
+          }
           break;
         }
 
@@ -331,13 +408,30 @@ export async function mapAndEmitEvents(
         return;
       }
 
+      case "agent.custom_tool_use": {
+        const customEvent = event as { id: string; name: string; input: Record<string, unknown>; type: string };
+        const stepIndex = planSteps.length;
+        const label = customEvent.name === "plan_ready"
+          ? "Updating issue description"
+          : customEvent.name === "requires_clarification"
+            ? "Requesting clarification"
+            : `Custom tool: ${customEvent.name}`;
+        planSteps.push({ content: label, status: "inProgress" });
+        pendingCustomTools.set(customEvent.id, {
+          name: customEvent.name,
+          input: customEvent.input,
+          stepIndex,
+        });
+        await pushPlan();
+        break;
+      }
+
       case "session.status_running":
       case "session.status_rescheduled":
       case "session.deleted":
       case "span.model_request_start":
       case "span.model_request_end":
       case "agent.thread_context_compacted":
-      case "agent.custom_tool_use": // TODO: handle custom tools
       case "user.message":
       case "user.interrupt":
       case "user.tool_confirmation":

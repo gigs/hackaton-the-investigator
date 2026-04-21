@@ -14,7 +14,10 @@ import {
   markWebhookProcessed,
   withSessionLock,
 } from "../lib/store/memory.js";
-import type { AgentSessionEventPayload } from "../lib/linear/types.js";
+import type {
+  AgentSessionEventPayload,
+  SessionContext,
+} from "../lib/linear/types.js";
 
 let cachedOrgId: string | null = null;
 
@@ -78,6 +81,54 @@ webhook.post("/webhook", async (c) => {
   return c.json({ ok: true });
 });
 
+async function resolveTriggerUserId(
+  client: Awaited<ReturnType<typeof getLinearClient>>,
+  payload: AgentSessionEventPayload,
+  linearSessionId: string,
+): Promise<string> {
+  try {
+    if (payload.action === "created") {
+      if (payload.agentSession.creatorId) {
+        console.log("Trigger user from payload creatorId: %s", payload.agentSession.creatorId);
+        return payload.agentSession.creatorId;
+      }
+      const session = await client.agentSession(linearSessionId);
+      const creator = await session.creator;
+      if (creator?.id) {
+        console.log("Trigger user from session creator: %s", creator.id);
+        return creator.id;
+      }
+    } else if (payload.action === "prompted") {
+      if (payload.agentSession.comment?.userId) {
+        console.log("Trigger user from comment userId: %s", payload.agentSession.comment.userId);
+        return payload.agentSession.comment.userId;
+      }
+      if (payload.agentSession.comment?.id) {
+        try {
+          const comment = await client.comment({ id: payload.agentSession.comment.id });
+          const user = await comment.user;
+          if (user?.id) {
+            console.log("Trigger user from fetched comment user: %s", user.id);
+            return user.id;
+          }
+        } catch (commentErr) {
+          console.warn("Could not fetch comment user: %s", commentErr);
+        }
+      }
+      const session = await client.agentSession(linearSessionId);
+      const creator = await session.creator;
+      if (creator?.id) {
+        console.log("Trigger user fallback to session creator: %s", creator.id);
+        return creator.id;
+      }
+    }
+  } catch (err) {
+    console.warn("Could not resolve trigger user for session=%s: %s", linearSessionId, err);
+  }
+  console.warn("Trigger user unresolved for session=%s, using empty string", linearSessionId);
+  return "";
+}
+
 async function processWebhookAsync(
   payload: AgentSessionEventPayload,
   linearSessionId: string,
@@ -87,6 +138,9 @@ async function processWebhookAsync(
 
     try {
       const issueIdentifier = payload.agentSession.issue.identifier;
+      const issueId = payload.agentSession.issue.id;
+      const triggerUserId = await resolveTriggerUserId(client, payload, linearSessionId);
+      const sessionCtx: SessionContext = { issueId, triggerUserId };
 
       if (payload.action === "created") {
         await emitThought(
@@ -108,7 +162,7 @@ async function processWebhookAsync(
           issueIdentifier,
           promptContext,
         );
-        await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId);
+        await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId, sessionCtx);
       } else if (payload.action === "prompted") {
         const followUp = payload.agentActivity?.body ?? "";
         console.log(
@@ -123,7 +177,7 @@ async function processWebhookAsync(
           issueIdentifier,
           followUp,
         );
-        await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId);
+        await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId, sessionCtx);
       }
     } catch (err) {
       let userMessage: string;

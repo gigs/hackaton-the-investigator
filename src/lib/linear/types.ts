@@ -1,6 +1,12 @@
+export interface SessionContext {
+  issueId: string;
+  triggerUserId: string;
+}
+
 export interface AgentSessionPayload {
   id: string;
   status: string;
+  creatorId?: string;
   issue: {
     id: string;
     identifier: string;
@@ -10,6 +16,7 @@ export interface AgentSessionPayload {
   comment?: {
     id: string;
     body: string;
+    userId?: string;
   };
 }
 
