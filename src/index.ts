@@ -3,11 +3,13 @@ import { serve } from "@hono/node-server";
 import { config } from "./config.js";
 import { health } from "./routes/health.js";
 import { oauth } from "./routes/oauth.js";
+import { webhook } from "./routes/webhook.js";
 
 const app = new Hono();
 
 app.route("/", health);
 app.route("/", oauth);
+app.route("/", webhook);
 
 app.onError((err, c) => {
   console.error("Unhandled error:", err.message);

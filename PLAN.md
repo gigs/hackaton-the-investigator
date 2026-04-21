@@ -324,7 +324,7 @@ OAuth 2.0 flow for Linear app installation.
 
 ## Phase 2 — Webhook Handling & Activities
 
-### - [ ] 2.1 — Webhook signature verification
+### - [x] 2.1 — Webhook signature verification
 
 Verify that incoming webhooks are genuinely from Linear.
 
@@ -350,7 +350,7 @@ curl -X POST http://localhost:3000/webhook -d '{}' -H 'Content-Type: application
 
 ---
 
-### - [ ] 2.2 — Activity helpers
+### - [x] 2.2 — Activity helpers
 
 Helper functions for emitting Linear Agent Activities.
 
@@ -374,7 +374,7 @@ Helper functions for emitting Linear Agent Activities.
 
 ---
 
-### - [ ] 2.3 — Webhook route
+### - [x] 2.3 — Webhook route
 
 Receive Linear webhook events and process them asynchronously.
 
