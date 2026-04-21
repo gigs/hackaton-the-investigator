@@ -577,7 +577,7 @@ Prevent stale sessions and runaway agents.
 
 ---
 
-### - [ ] 5.3 — Error handling
+### - [x] 5.3 — Error handling
 
 Structured error mapping from Anthropic to Linear.
 

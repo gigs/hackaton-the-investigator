@@ -3,7 +3,11 @@ import { config } from "../config.js";
 import { verifyWebhookSignature } from "../lib/linear/webhook-verify.js";
 import { getLinearClient } from "../lib/linear/client.js";
 import { emitThought, emitError } from "../lib/linear/activities.js";
-import { sendAndStreamWithRecovery } from "../lib/anthropic/session.js";
+import {
+  sendAndStreamWithRecovery,
+  InvestigatorError,
+} from "../lib/anthropic/session.js";
+import { classifyAnthropicError } from "../lib/anthropic/errors.js";
 import { mapAndEmitEvents } from "../lib/anthropic/event-mapper.js";
 import {
   hasProcessedWebhook,
@@ -119,17 +123,26 @@ async function processWebhookAsync(
         await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId);
       }
     } catch (err) {
-      console.error(
-        "Error processing webhook for session",
-        linearSessionId,
-        err,
-      );
-      try {
-        await emitError(
-          client,
+      let userMessage: string;
+      if (err instanceof InvestigatorError) {
+        console.error(
+          "Webhook error (classified) session=%s: %s",
           linearSessionId,
-          "An unexpected error occurred while processing the request.",
+          err.classified.logMessage,
         );
+        userMessage = err.classified.userMessage;
+      } else {
+        const classified = classifyAnthropicError(err);
+        console.error(
+          "Webhook error session=%s: %s",
+          linearSessionId,
+          classified.logMessage,
+        );
+        userMessage = classified.userMessage;
+      }
+
+      try {
+        await emitError(client, linearSessionId, userMessage);
       } catch (emitErr) {
         console.error("Failed to emit error activity:", emitErr);
       }

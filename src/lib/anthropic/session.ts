@@ -4,6 +4,17 @@ import type { BetaManagedAgentsStreamSessionEvents } from "@anthropic-ai/sdk/res
 import type { LinearClient } from "@linear/sdk";
 import { config } from "../../config.js";
 import { sessionMappings } from "../store/memory.js";
+import { classifyAnthropicError, type ClassifiedError } from "./errors.js";
+
+export class InvestigatorError extends Error {
+  constructor(
+    public readonly classified: ClassifiedError,
+    cause?: unknown,
+  ) {
+    super(classified.logMessage, { cause });
+    this.name = "InvestigatorError";
+  }
+}
 
 const MAX_HISTORY_ACTIVITIES = 20;
 
@@ -38,11 +49,18 @@ async function createNewSession(
   issueIdentifier: string,
 ): Promise<string> {
   const anthropic = getClient();
-  const session = await anthropic.beta.sessions.create({
-    agent: config.MANAGED_AGENT_ID,
-    environment_id: config.MANAGED_ENVIRONMENT_ID,
-    title: `Linear ${issueIdentifier}`,
-  });
+  let session;
+  try {
+    session = await anthropic.beta.sessions.create({
+      agent: config.MANAGED_AGENT_ID,
+      environment_id: config.MANAGED_ENVIRONMENT_ID,
+      title: `Linear ${issueIdentifier}`,
+    });
+  } catch (err) {
+    const classified = classifyAnthropicError(err);
+    console.error(classified.logMessage);
+    throw new InvestigatorError(classified, err);
+  }
 
   sessionMappings.set(linearSessionId, session.id);
   console.log(
@@ -59,20 +77,35 @@ export async function sendAndStream(
 ): Promise<Stream<BetaManagedAgentsStreamSessionEvents>> {
   const anthropic = getClient();
 
-  // Open stream FIRST to avoid race condition — per Anthropic docs,
-  // only events emitted after the stream opens are delivered.
-  const stream = await anthropic.beta.sessions.events.stream(
-    anthropicSessionId,
-  );
+  let stream: Stream<BetaManagedAgentsStreamSessionEvents>;
+  try {
+    // Open stream FIRST to avoid race condition — per Anthropic docs,
+    // only events emitted after the stream opens are delivered.
+    stream = await anthropic.beta.sessions.events.stream(
+      anthropicSessionId,
+    );
+  } catch (err) {
+    if (isSessionExpiredOrTerminated(err)) throw err;
+    const classified = classifyAnthropicError(err);
+    console.error(classified.logMessage);
+    throw new InvestigatorError(classified, err);
+  }
 
-  await anthropic.beta.sessions.events.send(anthropicSessionId, {
-    events: [
-      {
-        type: "user.message",
-        content: [{ type: "text", text: prompt }],
-      },
-    ],
-  });
+  try {
+    await anthropic.beta.sessions.events.send(anthropicSessionId, {
+      events: [
+        {
+          type: "user.message",
+          content: [{ type: "text", text: prompt }],
+        },
+      ],
+    });
+  } catch (err) {
+    if (isSessionExpiredOrTerminated(err)) throw err;
+    const classified = classifyAnthropicError(err);
+    console.error(classified.logMessage);
+    throw new InvestigatorError(classified, err);
+  }
 
   console.log(
     "Anthropic prompt sent and stream opened: session=%s promptLength=%d",
@@ -164,7 +197,12 @@ export async function sendAndStreamWithRecovery(
     const stream = await sendAndStream(anthropicSessionId, prompt);
     return { stream, anthropicSessionId };
   } catch (err) {
-    if (!isSessionExpiredOrTerminated(err)) throw err;
+    if (err instanceof InvestigatorError) throw err;
+    if (!isSessionExpiredOrTerminated(err)) {
+      const classified = classifyAnthropicError(err);
+      console.error(classified.logMessage);
+      throw new InvestigatorError(classified, err);
+    }
 
     console.log(
       "Anthropic session expired/terminated, recovering: linear=%s anthropic=%s",

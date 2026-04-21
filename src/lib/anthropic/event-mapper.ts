@@ -12,7 +12,8 @@ import {
   updatePlan,
   type PlanStep,
 } from "../linear/activities.js";
-import { getClient } from "./session.js";
+import { getClient, InvestigatorError } from "./session.js";
+import { classifyAnthropicError } from "./errors.js";
 
 const INITIAL_TIMEOUT_MS = 30_000;
 const KEEPALIVE_CHECK_MS = 30_000;
@@ -364,7 +365,18 @@ export async function mapAndEmitEvents(
       }
       return;
     }
-    throw err;
+
+    await cancelRemainingSteps();
+
+    if (err instanceof InvestigatorError) {
+      console.error("Stream error (classified): %s", err.classified.logMessage);
+      await emitError(linearClient, linearSessionId, err.classified.userMessage);
+      return;
+    }
+
+    const classified = classifyAnthropicError(err);
+    console.error("Stream error: %s", classified.logMessage);
+    await emitError(linearClient, linearSessionId, classified.userMessage);
   } finally {
     cleanup();
   }
