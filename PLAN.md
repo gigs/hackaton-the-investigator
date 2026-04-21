@@ -82,7 +82,7 @@ hackaton-the-investigator/
 
 ## Phase 1 — Scaffold & OAuth
 
-### - [ ] 1.1 — Project scaffold
+### - [x] 1.1 — Project scaffold
 
 Create the project skeleton with pinned dependencies.
 
