@@ -555,7 +555,7 @@ Show execution progress in the Linear UI via agent session plans.
 
 ---
 
-### - [ ] 5.2 — Timeouts and keepalive
+### - [x] 5.2 — Timeouts and keepalive
 
 Prevent stale sessions and runaway agents.
 

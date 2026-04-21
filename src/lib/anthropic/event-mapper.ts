@@ -14,6 +14,13 @@ import {
 } from "../linear/activities.js";
 import { getClient } from "./session.js";
 
+const INITIAL_TIMEOUT_MS = 30_000;
+const KEEPALIVE_CHECK_MS = 30_000;
+const KEEPALIVE_INTERVAL_MS = 60_000;
+const MAX_DURATION_MS = 5 * 60_000;
+
+type AbortReason = "initial_timeout" | "max_duration";
+
 function extractText(
   content?: Array<{ type: string; text?: string }>,
 ): string {
@@ -39,18 +46,95 @@ export async function mapAndEmitEvents(
   const planSteps: PlanStep[] = [];
   const toolIdToStepIndex = new Map<string, number>();
 
+  let lastEventTime = Date.now();
+  let receivedFirstEvent = false;
+  let abortReason: AbortReason | null = null;
+
+  const initialTimer = setTimeout(() => {
+    if (!receivedFirstEvent) {
+      abortReason = "initial_timeout";
+      stream.controller.abort();
+    }
+  }, INITIAL_TIMEOUT_MS);
+
+  const maxDurationTimer = setTimeout(() => {
+    abortReason = "max_duration";
+    stream.controller.abort();
+  }, MAX_DURATION_MS);
+
+  const keepaliveTimer = setInterval(() => {
+    if (!receivedFirstEvent) return;
+    if (Date.now() - lastEventTime >= KEEPALIVE_INTERVAL_MS) {
+      emitThought(linearClient, linearSessionId, "Still working…").catch(() => {});
+      lastEventTime = Date.now();
+    }
+  }, KEEPALIVE_CHECK_MS);
+
+  function cleanup(): void {
+    clearTimeout(initialTimer);
+    clearTimeout(maxDurationTimer);
+    clearInterval(keepaliveTimer);
+  }
+
+  async function cancelRemainingSteps(): Promise<void> {
+    let changed = false;
+    for (const step of planSteps) {
+      if (step.status === "inProgress" || step.status === "pending") {
+        step.status = "canceled";
+        changed = true;
+      }
+    }
+    if (changed && planSteps.length > 0) {
+      await updatePlan(linearClient, linearSessionId, [...planSteps]);
+    }
+  }
+
+  async function handleAbort(): Promise<void> {
+    if (abortReason === "initial_timeout") {
+      console.error(
+        "Initial timeout (%dms) — no events received: session=%s",
+        INITIAL_TIMEOUT_MS,
+        anthropicSessionId,
+      );
+      await emitError(
+        linearClient,
+        linearSessionId,
+        "The investigation agent did not respond within 30 seconds.",
+      );
+    } else if (abortReason === "max_duration") {
+      console.error(
+        "Max duration (%dms) exceeded: session=%s",
+        MAX_DURATION_MS,
+        anthropicSessionId,
+      );
+      await cancelRemainingSteps();
+      await emitError(
+        linearClient,
+        linearSessionId,
+        "The investigation agent exceeded the maximum session duration (5 minutes).",
+      );
+    }
+  }
+
   async function pushPlan(): Promise<void> {
     await updatePlan(linearClient, linearSessionId, [...planSteps]);
   }
 
-  for await (const event of stream) {
-    console.log(
-      "Anthropic event: type=%s session=%s",
-      event.type,
-      anthropicSessionId,
-    );
+  try {
+    for await (const event of stream) {
+      if (!receivedFirstEvent) {
+        receivedFirstEvent = true;
+        clearTimeout(initialTimer);
+      }
+      lastEventTime = Date.now();
 
-    switch (event.type) {
+      console.log(
+        "Anthropic event: type=%s session=%s",
+        event.type,
+        anthropicSessionId,
+      );
+
+      switch (event.type) {
       case "agent.thinking": {
         await emitThought(linearClient, linearSessionId, "Thinking…");
         break;
@@ -266,5 +350,22 @@ export async function mapAndEmitEvents(
         );
         break;
     }
+    }
+
+    if (abortReason) {
+      await handleAbort();
+    }
+  } catch (err) {
+    if (abortReason) {
+      try {
+        await handleAbort();
+      } catch (abortErr) {
+        console.error("Failed to emit abort error activity:", abortErr);
+      }
+      return;
+    }
+    throw err;
+  } finally {
+    cleanup();
   }
 }
