@@ -414,7 +414,7 @@ Receive Linear webhook events and process them asynchronously.
 
 ## Phase 3 — Anthropic Managed Agent Proxy
 
-### - [ ] 3.1 — Anthropic session manager
+### - [x] 3.1 — Anthropic session manager
 
 Create and reuse Managed Agent sessions, with stream-first pattern.
 

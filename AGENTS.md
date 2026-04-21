@@ -4,7 +4,7 @@
 - Runtime: Node.js 22, TypeScript 5.9.3, pnpm 9.15.4
 - Framework: Hono 4.12.14 + @hono/node-server 1.19.14
 - Linear SDK: @linear/sdk 58.0.0
-- Anthropic SDK: @anthropic-ai/sdk 0.52.0
+- Anthropic SDK: @anthropic-ai/sdk 0.90.0
 - Secret Manager: @google-cloud/secret-manager 5.6.0
 - Validation: zod 3.25.76
 - Dev: tsx 4.21.0
