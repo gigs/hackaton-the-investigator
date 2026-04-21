@@ -609,7 +609,7 @@ Structured error mapping from Anthropic to Linear.
 
 ---
 
-### - [ ] 5.4 — README
+### - [x] 5.4 — README
 
 Complete project documentation.
 
