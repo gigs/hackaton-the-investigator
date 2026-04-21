@@ -206,7 +206,7 @@ curl -s https://<domain>/health
 
 ---
 
-### - [ ] 1.4 — App entry
+### - [x] 1.4 — App entry
 
 Hono application bootstrap with route mounting and error boundary.
 
@@ -228,7 +228,7 @@ curl http://localhost:3000/health   # → {"status":"ok"}
 
 ---
 
-### - [ ] 1.5 — Health route
+### - [x] 1.5 — Health route
 
 Simple health check endpoint for LB probes.
 
@@ -245,7 +245,7 @@ curl -s http://localhost:3000/health | jq .
 
 ---
 
-### - [ ] 1.6 — Linear client wrapper
+### - [x] 1.6 — Linear client wrapper
 
 LinearClient factory with automatic token refresh and rotation.
 
@@ -269,7 +269,7 @@ LinearClient factory with automatic token refresh and rotation.
 
 ---
 
-### - [ ] 1.7 — Linear types
+### - [x] 1.7 — Linear types
 
 TypeScript interfaces for webhook payloads.
 
@@ -289,7 +289,7 @@ pnpm tsc --noEmit   # types compile without errors
 
 ---
 
-### - [ ] 1.8 — OAuth routes
+### - [x] 1.8 — OAuth routes
 
 OAuth 2.0 flow for Linear app installation.
 

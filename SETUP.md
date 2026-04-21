@@ -137,6 +137,19 @@ gcloud secrets versions access latest \
 
 ---
 
+## App Routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check for LB probes → `{"status":"ok"}` |
+| `GET` | `/oauth/authorize` | Starts Linear OAuth flow (redirects to Linear consent) |
+| `GET` | `/oauth/callback` | OAuth callback — exchanges code, stores tokens in Secret Manager |
+| `POST` | `/webhook` | Receives Linear webhook events _(Phase 2)_ |
+
+Tokens are auto-refreshed when within 5 minutes of expiry. Linear rotates refresh tokens on each use — both new access and refresh tokens are persisted.
+
+---
+
 ## 7. Verify
 
 ```bash

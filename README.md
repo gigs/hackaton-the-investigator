@@ -80,6 +80,36 @@ Laptop-side. Opens an IAP TCP tunnel so you can reach the app running on the VM 
 
 Overrideable env vars: `PROJECT_ID`, `ZONE`, `VM_NAME`, `REMOTE_PORT`, `LOCAL_PORT`. Any gigster with gcloud auth can run this.
 
+## Application
+
+### Routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check for LB probes → `{"status":"ok"}` |
+| `GET` | `/oauth/authorize` | Starts Linear OAuth flow (redirects to Linear consent page) |
+| `GET` | `/oauth/callback` | Handles OAuth callback, exchanges code for tokens, stores in Secret Manager |
+| `POST` | `/webhook` | Receives Linear webhook events _(Phase 2 — not yet implemented)_ |
+
+### OAuth setup
+
+After deploying and configuring your Linear app (client ID, client secret, webhook secret):
+
+1. Open `https://<your-domain>/oauth/authorize` in a browser
+2. Approve the OAuth consent on Linear
+3. The callback exchanges the code for tokens, queries `viewer { id }`, and stores everything in Secret Manager
+4. The Investigator should now appear as assignable/mentionable in your Linear workspace
+
+Tokens are auto-refreshed when they're within 5 minutes of expiry.
+
+### Local development
+
+```bash
+cp .env.example .env       # fill in all values
+pnpm install
+pnpm dev                   # starts on http://localhost:3000
+```
+
 ## Day-to-day
 
 ```bash
