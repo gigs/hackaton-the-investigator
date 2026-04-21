@@ -21,7 +21,7 @@ export interface AgentActivityPayload {
 
 export interface AgentSessionEventPayload {
   action: "created" | "prompted";
-  type: "AgentSession";
+  type: "AgentSession" | "AgentSessionEvent";
   agentSession: AgentSessionPayload;
   agentActivity?: AgentActivityPayload;
   promptContext?: string;

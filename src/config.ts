@@ -8,6 +8,7 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().min(1),
   MANAGED_AGENT_ID: z.string().min(1),
   MANAGED_ENVIRONMENT_ID: z.string().min(1),
+  MANAGED_VAULT_ID: z.string().min(1).optional(),
 
   GCP_PROJECT_ID: z.string().min(1),
 

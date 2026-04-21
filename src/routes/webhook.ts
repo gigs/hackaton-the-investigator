@@ -46,7 +46,10 @@ webhook.post("/webhook", async (c) => {
     return c.json({ ok: true });
   }
 
-  if (payload.type !== "AgentSession") {
+  console.log("Webhook received: type=%s action=%s", payload.type, (payload as any).action);
+
+  if (payload.type !== "AgentSession" && payload.type !== "AgentSessionEvent") {
+    console.log("Ignoring non-AgentSession webhook (type=%s)", payload.type);
     return c.json({ ok: true });
   }
 

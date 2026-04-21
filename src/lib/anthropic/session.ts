@@ -55,6 +55,7 @@ async function createNewSession(
       agent: config.MANAGED_AGENT_ID,
       environment_id: config.MANAGED_ENVIRONMENT_ID,
       title: `Linear ${issueIdentifier}`,
+      ...(config.MANAGED_VAULT_ID && { vault_ids: [config.MANAGED_VAULT_ID] }),
     });
   } catch (err) {
     const classified = classifyAnthropicError(err);
