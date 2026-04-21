@@ -33,26 +33,68 @@ else
 fi
 
 echo "==> Linking billing account ${BILLING_ACCOUNT}"
-gcloud beta billing projects link "${PROJECT_ID}" --billing-account="${BILLING_ACCOUNT}"
+gcloud billing projects link "${PROJECT_ID}" --billing-account="${BILLING_ACCOUNT}"
 
 echo "==> Enabling APIs (compute, iap, oslogin)"
-gcloud services enable compute.googleapis.com iap.googleapis.com oslogin.googleapis.com \
-  --project="${PROJECT_ID}"
+NEEDED_APIS=(compute.googleapis.com iap.googleapis.com oslogin.googleapis.com)
+ENABLED_APIS="$(gcloud services list --enabled --project="${PROJECT_ID}" --format='value(config.name)' 2>/dev/null || true)"
+APIS_TO_ENABLE=()
+for api in "${NEEDED_APIS[@]}"; do
+  if echo "${ENABLED_APIS}" | grep -qx "${api}"; then
+    echo "    ${api} already enabled"
+  else
+    APIS_TO_ENABLE+=("${api}")
+  fi
+done
+if [[ ${#APIS_TO_ENABLE[@]} -gt 0 ]]; then
+  gcloud services enable "${APIS_TO_ENABLE[@]}" --project="${PROJECT_ID}"
+else
+  echo "    all APIs already enabled, skipping"
+fi
 
 echo "==> Enabling project-wide OS Login"
-gcloud compute project-info add-metadata \
-  --project="${PROJECT_ID}" \
-  --metadata=enable-oslogin=TRUE
+OSLOGIN_META="$(gcloud compute project-info describe --project="${PROJECT_ID}" \
+  --format='value(commonInstanceMetadata.items.filter(key:enable-oslogin).extract(value).flatten())' 2>/dev/null || true)"
+if echo "${OSLOGIN_META}" | grep -qi '^true$'; then
+  echo "    OS Login already enabled, skipping"
+else
+  gcloud compute project-info add-metadata \
+    --project="${PROJECT_ID}" \
+    --metadata=enable-oslogin=TRUE
+fi
 
 echo "==> Granting IAP tunnel + OS Login roles to domain:${GIGS_DOMAIN}"
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="domain:${GIGS_DOMAIN}" \
-  --role="roles/iap.tunnelResourceAccessor" \
-  --condition=None >/dev/null
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="domain:${GIGS_DOMAIN}" \
-  --role="roles/compute.osLogin" \
-  --condition=None >/dev/null
+CURRENT_POLICY="$(gcloud projects get-iam-policy "${PROJECT_ID}" --format=json 2>/dev/null || true)"
+
+MEMBER="domain:${GIGS_DOMAIN}"
+if echo "${CURRENT_POLICY}" | grep -q "roles/iap.tunnelResourceAccessor" && \
+   echo "${CURRENT_POLICY}" | grep -q "${MEMBER}"; then
+  echo "    roles/iap.tunnelResourceAccessor already bound, skipping"
+else
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="${MEMBER}" \
+    --role="roles/iap.tunnelResourceAccessor" \
+    --condition=None >/dev/null
+fi
+
+if echo "${CURRENT_POLICY}" | grep -q "roles/compute.osLogin" && \
+   echo "${CURRENT_POLICY}" | grep -q "${MEMBER}"; then
+  echo "    roles/compute.osLogin already bound, skipping"
+else
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="${MEMBER}" \
+    --role="roles/compute.osLogin" \
+    --condition=None >/dev/null
+fi
+
+echo "==> Ensuring default VPC network exists"
+if ! gcloud compute networks describe default --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute networks create default \
+    --project="${PROJECT_ID}" \
+    --subnet-mode=auto
+else
+  echo "    default network already exists, skipping"
+fi
 
 echo "==> Removing default wide-open SSH/RDP firewall rules"
 gcloud compute firewall-rules delete default-allow-ssh \
