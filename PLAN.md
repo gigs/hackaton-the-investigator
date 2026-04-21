@@ -530,7 +530,7 @@ Handle expired or errored Anthropic sessions gracefully.
 
 ## Phase 5 — Polish
 
-### - [ ] 5.1 — Agent plans
+### - [x] 5.1 — Agent plans
 
 Show execution progress in the Linear UI via agent session plans.
 

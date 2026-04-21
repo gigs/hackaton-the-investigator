@@ -9,6 +9,8 @@ import {
   emitAction,
   emitResponse,
   emitError,
+  updatePlan,
+  type PlanStep,
 } from "../linear/activities.js";
 import { getClient } from "./session.js";
 
@@ -34,6 +36,12 @@ export async function mapAndEmitEvents(
   anthropicSessionId: string,
 ): Promise<void> {
   const anthropic = getClient();
+  const planSteps: PlanStep[] = [];
+  const toolIdToStepIndex = new Map<string, number>();
+
+  async function pushPlan(): Promise<void> {
+    await updatePlan(linearClient, linearSessionId, [...planSteps]);
+  }
 
   for await (const event of stream) {
     console.log(
@@ -49,6 +57,11 @@ export async function mapAndEmitEvents(
       }
 
       case "agent.tool_use": {
+        const stepIndex = planSteps.length;
+        planSteps.push({ content: event.name, status: "inProgress" });
+        toolIdToStepIndex.set(event.id, stepIndex);
+        await pushPlan();
+
         await emitAction(
           linearClient,
           linearSessionId,
@@ -59,16 +72,28 @@ export async function mapAndEmitEvents(
       }
 
       case "agent.mcp_tool_use": {
+        const label = `${event.mcp_server_name}/${event.name}`;
+        const stepIndex = planSteps.length;
+        planSteps.push({ content: label, status: "inProgress" });
+        toolIdToStepIndex.set(event.id, stepIndex);
+        await pushPlan();
+
         await emitAction(
           linearClient,
           linearSessionId,
-          `${event.mcp_server_name}/${event.name}`,
+          label,
           truncate(JSON.stringify(event.input)),
         );
         break;
       }
 
       case "agent.tool_result": {
+        const idx = toolIdToStepIndex.get(event.tool_use_id);
+        if (idx !== undefined) {
+          planSteps[idx].status = event.is_error ? "canceled" : "completed";
+          await pushPlan();
+        }
+
         const resultText = extractText(event.content);
         await emitAction(
           linearClient,
@@ -81,6 +106,12 @@ export async function mapAndEmitEvents(
       }
 
       case "agent.mcp_tool_result": {
+        const idx = toolIdToStepIndex.get(event.mcp_tool_use_id);
+        if (idx !== undefined) {
+          planSteps[idx].status = event.is_error ? "canceled" : "completed";
+          await pushPlan();
+        }
+
         const resultText = extractText(event.content);
         await emitAction(
           linearClient,
@@ -109,6 +140,13 @@ export async function mapAndEmitEvents(
         const { stop_reason } = event;
 
         if (stop_reason.type === "end_turn") {
+          for (const step of planSteps) {
+            if (step.status === "pending" || step.status === "inProgress") {
+              step.status = "completed";
+            }
+          }
+          if (planSteps.length > 0) await pushPlan();
+
           console.log(
             "Session turn complete: %s",
             anthropicSessionId,
@@ -142,6 +180,11 @@ export async function mapAndEmitEvents(
         }
 
         if (stop_reason.type === "retries_exhausted") {
+          for (const step of planSteps) {
+            if (step.status === "inProgress") step.status = "canceled";
+          }
+          if (planSteps.length > 0) await pushPlan();
+
           await emitError(
             linearClient,
             linearSessionId,
@@ -163,6 +206,11 @@ export async function mapAndEmitEvents(
             "Retrying…",
           );
         } else if (retry_status.type === "exhausted") {
+          for (const step of planSteps) {
+            if (step.status === "inProgress") step.status = "canceled";
+          }
+          if (planSteps.length > 0) await pushPlan();
+
           await emitError(
             linearClient,
             linearSessionId,
@@ -170,6 +218,11 @@ export async function mapAndEmitEvents(
           );
           return;
         } else if (retry_status.type === "terminal") {
+          for (const step of planSteps) {
+            if (step.status === "inProgress") step.status = "canceled";
+          }
+          if (planSteps.length > 0) await pushPlan();
+
           await emitError(
             linearClient,
             linearSessionId,
@@ -181,6 +234,11 @@ export async function mapAndEmitEvents(
       }
 
       case "session.status_terminated": {
+        for (const step of planSteps) {
+          if (step.status === "inProgress") step.status = "canceled";
+        }
+        if (planSteps.length > 0) await pushPlan();
+
         console.log(
           "Session terminated: %s",
           anthropicSessionId,

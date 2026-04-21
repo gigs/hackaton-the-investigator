@@ -1,5 +1,38 @@
 import type { LinearClient } from "@linear/sdk";
 
+export interface PlanStep {
+  content: string;
+  status: "pending" | "inProgress" | "completed" | "canceled";
+}
+
+const AGENT_SESSION_UPDATE_MUTATION = `
+  mutation AgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
+    agentSessionUpdate(id: $id, input: $input) {
+      success
+    }
+  }
+`;
+
+export async function updatePlan(
+  client: LinearClient,
+  sessionId: string,
+  steps: PlanStep[],
+): Promise<void> {
+  try {
+    await client.client.rawRequest(AGENT_SESSION_UPDATE_MUTATION, {
+      id: sessionId,
+      input: { plan: steps },
+    });
+    console.log(
+      "Plan updated: session=%s steps=%d",
+      sessionId,
+      steps.length,
+    );
+  } catch (err) {
+    console.error("Failed to update plan for session=%s: %s", sessionId, err);
+  }
+}
+
 export async function emitThought(
   client: LinearClient,
   sessionId: string,
