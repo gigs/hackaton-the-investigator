@@ -6,7 +6,7 @@ import { sessionMappings } from "../store/memory.js";
 
 let client: Anthropic | null = null;
 
-function getClient(): Anthropic {
+export function getClient(): Anthropic {
   if (!client) {
     client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
   }

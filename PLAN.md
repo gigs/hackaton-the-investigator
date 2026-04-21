@@ -22,7 +22,7 @@ Linear Workspace → HTTPS LB → VM:3000 (Hono) → Anthropic Managed Agent
 | Session mappings | In-memory Map | Recoverable on restart via Linear Activities API replay |
 | Webhook dedup | In-memory Set (5min TTL) | Ephemeral, aligned to Linear retry window |
 | Tenant model | Single workspace | Hackathon scope |
-| Tool confirmation | Auto-confirm all | Managed agent environment constrains available tools |
+| Tool confirmation | Auto-deny all | Safety-first: tools requiring confirmation are denied with a message |
 | Issue transitions | None | Per team decision |
 | HTTPS | GCP HTTPS Load Balancer + managed cert | Production-grade TLS termination for Linear webhooks + OAuth |
 
@@ -443,7 +443,7 @@ Create and reuse Managed Agent sessions, with stream-first pattern.
 
 ---
 
-### - [ ] 3.2 — Event mapper
+### - [x] 3.2 — Event mapper
 
 Map Anthropic Managed Agent events to Linear Agent Activities in real-time.
 
@@ -458,7 +458,7 @@ Map Anthropic Managed Agent events to Linear Agent Activities in real-time.
 | `agent.tool_result` | `action` with `result` | Updates previous action |
 | `agent.message` | `response` | Agent's text output |
 | `session.status_idle` + `end_turn` | (done, stop iterating) | Session complete |
-| `session.status_idle` + `requires_action` | auto-confirm | Send `user.tool_confirmation` with `allow: true`, continue streaming |
+| `session.status_idle` + `requires_action` | auto-deny | Send `user.tool_confirmation` with `result: "deny"`, continue streaming |
 | `session.error` + `retrying` | ephemeral `thought` ("Retrying...") | Transient, agent will retry |
 | `session.error` + `exhausted` | `error` activity | Turn failed, session idle |
 | `session.error` + `terminal` | `error` activity + stop | Session dead |
@@ -473,7 +473,7 @@ Map Anthropic Managed Agent events to Linear Agent Activities in real-time.
 
 ---
 
-### - [ ] 3.3 — Wire proxy to webhook
+### - [x] 3.3 — Wire proxy to webhook
 
 Connect the Anthropic session manager + event mapper to the webhook handler.
 

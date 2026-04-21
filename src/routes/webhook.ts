@@ -3,6 +3,8 @@ import { config } from "../config.js";
 import { verifyWebhookSignature } from "../lib/linear/webhook-verify.js";
 import { getLinearClient } from "../lib/linear/client.js";
 import { emitThought, emitError } from "../lib/linear/activities.js";
+import { createOrGetSession, sendAndStream } from "../lib/anthropic/session.js";
+import { mapAndEmitEvents } from "../lib/anthropic/event-mapper.js";
 import {
   hasProcessedWebhook,
   markWebhookProcessed,
@@ -77,6 +79,8 @@ async function processWebhookAsync(
     const client = await getLinearClient();
 
     try {
+      const issueIdentifier = payload.agentSession.issue.identifier;
+
       if (payload.action === "created") {
         await emitThought(
           client,
@@ -88,11 +92,15 @@ async function processWebhookAsync(
         console.log(
           "Webhook created: session=%s issue=%s",
           linearSessionId,
-          payload.agentSession.issue.identifier,
+          issueIdentifier,
         );
 
-        // Phase 3 will wire the Anthropic proxy here
-        void promptContext;
+        const anthropicSessionId = await createOrGetSession(
+          linearSessionId,
+          issueIdentifier,
+        );
+        const stream = await sendAndStream(anthropicSessionId, promptContext);
+        await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId);
       } else if (payload.action === "prompted") {
         const followUp = payload.agentActivity?.body ?? "";
         console.log(
@@ -101,8 +109,12 @@ async function processWebhookAsync(
           followUp.length,
         );
 
-        // Phase 3 will wire the Anthropic proxy here
-        void followUp;
+        const anthropicSessionId = await createOrGetSession(
+          linearSessionId,
+          issueIdentifier,
+        );
+        const stream = await sendAndStream(anthropicSessionId, followUp);
+        await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId);
       }
     } catch (err) {
       console.error(
