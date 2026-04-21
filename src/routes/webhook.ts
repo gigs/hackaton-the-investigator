@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { verifyWebhookSignature } from "../lib/linear/webhook-verify.js";
 import { getLinearClient } from "../lib/linear/client.js";
 import { emitThought, emitError } from "../lib/linear/activities.js";
-import { createOrGetSession, sendAndStream } from "../lib/anthropic/session.js";
+import { sendAndStreamWithRecovery } from "../lib/anthropic/session.js";
 import { mapAndEmitEvents } from "../lib/anthropic/event-mapper.js";
 import {
   hasProcessedWebhook,
@@ -95,11 +95,12 @@ async function processWebhookAsync(
           issueIdentifier,
         );
 
-        const anthropicSessionId = await createOrGetSession(
+        const { stream, anthropicSessionId } = await sendAndStreamWithRecovery(
+          client,
           linearSessionId,
           issueIdentifier,
+          promptContext,
         );
-        const stream = await sendAndStream(anthropicSessionId, promptContext);
         await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId);
       } else if (payload.action === "prompted") {
         const followUp = payload.agentActivity?.body ?? "";
@@ -109,11 +110,12 @@ async function processWebhookAsync(
           followUp.length,
         );
 
-        const anthropicSessionId = await createOrGetSession(
+        const { stream, anthropicSessionId } = await sendAndStreamWithRecovery(
+          client,
           linearSessionId,
           issueIdentifier,
+          followUp,
         );
-        const stream = await sendAndStream(anthropicSessionId, followUp);
         await mapAndEmitEvents(stream, client, linearSessionId, anthropicSessionId);
       }
     } catch (err) {

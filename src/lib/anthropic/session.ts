@@ -1,8 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Stream } from "@anthropic-ai/sdk/streaming";
 import type { BetaManagedAgentsStreamSessionEvents } from "@anthropic-ai/sdk/resources/beta/sessions/events";
+import type { LinearClient } from "@linear/sdk";
 import { config } from "../../config.js";
 import { sessionMappings } from "../store/memory.js";
+
+const MAX_HISTORY_ACTIVITIES = 20;
 
 let client: Anthropic | null = null;
 
@@ -27,6 +30,13 @@ export async function createOrGetSession(
     return existing;
   }
 
+  return createNewSession(linearSessionId, issueIdentifier);
+}
+
+async function createNewSession(
+  linearSessionId: string,
+  issueIdentifier: string,
+): Promise<string> {
   const anthropic = getClient();
   const session = await anthropic.beta.sessions.create({
     agent: config.MANAGED_AGENT_ID,
@@ -71,4 +81,107 @@ export async function sendAndStream(
   );
 
   return stream;
+}
+
+/**
+ * Fetch conversation history from Linear Activities API and format it
+ * as a context summary for replaying into a new Anthropic session.
+ */
+export async function fetchConversationHistory(
+  linearClient: LinearClient,
+  linearSessionId: string,
+): Promise<string | null> {
+  try {
+    const session = await linearClient.agentSession(linearSessionId);
+    const activitiesConnection = await session.activities({
+      first: MAX_HISTORY_ACTIVITIES,
+    });
+
+    const entries: Array<{ role: "user" | "assistant"; body: string }> = [];
+
+    for (const activity of activitiesConnection.nodes) {
+      const content = activity.content;
+      if (!content || typeof content.type !== "string") continue;
+
+      if (content.type === "prompt" && "body" in content) {
+        entries.push({ role: "user", body: (content as { body: string }).body });
+      } else if (content.type === "response" && "body" in content) {
+        entries.push({ role: "assistant", body: (content as { body: string }).body });
+      }
+    }
+
+    if (entries.length === 0) return null;
+
+    const lines = entries.map(
+      (e) => `<${e.role}>\n${e.body}\n</${e.role}>`,
+    );
+
+    return [
+      "<conversation_history>",
+      "The following is the prior conversation history from this session.",
+      "Continue from where you left off.",
+      "",
+      ...lines,
+      "</conversation_history>",
+    ].join("\n");
+  } catch (err) {
+    console.error(
+      "Failed to fetch conversation history for session=%s: %s",
+      linearSessionId,
+      err,
+    );
+    return null;
+  }
+}
+
+function isSessionExpiredOrTerminated(err: unknown): boolean {
+  if (err instanceof Anthropic.APIError) {
+    // 404 = session not found/expired, 409 = session terminated
+    return err.status === 404 || err.status === 409;
+  }
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    return msg.includes("session") &&
+      (msg.includes("expired") || msg.includes("terminated") || msg.includes("not found"));
+  }
+  return false;
+}
+
+/**
+ * Send a prompt and open a stream, automatically recovering from
+ * expired/terminated Anthropic sessions by creating a new session
+ * and replaying conversation history from Linear.
+ */
+export async function sendAndStreamWithRecovery(
+  linearClient: LinearClient,
+  linearSessionId: string,
+  issueIdentifier: string,
+  prompt: string,
+): Promise<{ stream: Stream<BetaManagedAgentsStreamSessionEvents>; anthropicSessionId: string }> {
+  const anthropicSessionId = await createOrGetSession(linearSessionId, issueIdentifier);
+
+  try {
+    const stream = await sendAndStream(anthropicSessionId, prompt);
+    return { stream, anthropicSessionId };
+  } catch (err) {
+    if (!isSessionExpiredOrTerminated(err)) throw err;
+
+    console.log(
+      "Anthropic session expired/terminated, recovering: linear=%s anthropic=%s",
+      linearSessionId,
+      anthropicSessionId,
+    );
+
+    sessionMappings.delete(linearSessionId);
+
+    const newSessionId = await createNewSession(linearSessionId, issueIdentifier);
+
+    const history = await fetchConversationHistory(linearClient, linearSessionId);
+    const replayPrompt = history
+      ? `${history}\n\n${prompt}`
+      : prompt;
+
+    const stream = await sendAndStream(newSessionId, replayPrompt);
+    return { stream, anthropicSessionId: newSessionId };
+  }
 }

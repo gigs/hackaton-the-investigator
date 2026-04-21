@@ -498,7 +498,7 @@ Connect the Anthropic session manager + event mapper to the webhook handler.
 
 ## Phase 4 — Session Continuity
 
-### - [ ] 4.1 — Session recovery and history replay
+### - [x] 4.1 — Session recovery and history replay
 
 Handle expired or errored Anthropic sessions gracefully.
 
