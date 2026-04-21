@@ -126,7 +126,7 @@ pnpm dev
 
 ---
 
-### - [ ] 1.3 — Storage layer
+### - [x] 1.3 — Storage layer
 
 Two modules: Secret Manager for sensitive tokens, in-memory for ephemeral state.
 
@@ -155,7 +155,7 @@ Two modules: Secret Manager for sensitive tokens, in-memory for ephemeral state.
 
 ---
 
-### - [ ] 1.3b — GCP setup for Secret Manager
+### - [x] 1.3b — GCP setup for Secret Manager
 
 One-time infrastructure provisioning.
 
@@ -181,7 +181,7 @@ gcloud secrets get-iam-policy investigator-oauth-token --project=hackaton-the-in
 
 ---
 
-### - [ ] 1.3c — HTTPS Load Balancer
+### - [x] 1.3c — HTTPS Load Balancer
 
 Expose the app over HTTPS for Linear webhooks and OAuth redirects.
 

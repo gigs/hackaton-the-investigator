@@ -35,8 +35,8 @@ fi
 echo "==> Linking billing account ${BILLING_ACCOUNT}"
 gcloud billing projects link "${PROJECT_ID}" --billing-account="${BILLING_ACCOUNT}"
 
-echo "==> Enabling APIs (compute, iap, oslogin)"
-NEEDED_APIS=(compute.googleapis.com iap.googleapis.com oslogin.googleapis.com)
+echo "==> Enabling APIs (compute, iap, oslogin, secretmanager, certificatemanager)"
+NEEDED_APIS=(compute.googleapis.com iap.googleapis.com oslogin.googleapis.com secretmanager.googleapis.com certificatemanager.googleapis.com)
 ENABLED_APIS="$(gcloud services list --enabled --project="${PROJECT_ID}" --format='value(config.name)' 2>/dev/null || true)"
 APIS_TO_ENABLE=()
 for api in "${NEEDED_APIS[@]}"; do
@@ -150,6 +150,180 @@ else
   echo "    VM already exists, skipping create"
 fi
 
+# ─── Secret Manager ───────────────────────────────────────────────────────────
+
+SECRET_ID="investigator-oauth-token"
+echo "==> Creating Secret Manager secret: ${SECRET_ID}"
+if ! gcloud secrets describe "${SECRET_ID}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud secrets create "${SECRET_ID}" \
+    --project="${PROJECT_ID}" \
+    --replication-policy=automatic
+else
+  echo "    secret already exists, skipping"
+fi
+
+VM_SA="$(gcloud compute instances describe "${VM_NAME}" --zone="${ZONE}" --project="${PROJECT_ID}" \
+  --format='value(serviceAccounts[0].email)' 2>/dev/null || true)"
+if [[ -z "${VM_SA}" ]]; then
+  VM_SA="$(gcloud iam service-accounts list --project="${PROJECT_ID}" \
+    --filter='displayName:Compute Engine default service account' \
+    --format='value(email)' 2>/dev/null || true)"
+fi
+
+if [[ -n "${VM_SA}" ]]; then
+  echo "==> Granting Secret Manager roles to ${VM_SA}"
+  for ROLE in roles/secretmanager.secretAccessor roles/secretmanager.secretVersionManager; do
+    EXISTING="$(gcloud secrets get-iam-policy "${SECRET_ID}" --project="${PROJECT_ID}" --format=json 2>/dev/null || true)"
+    if echo "${EXISTING}" | grep -q "${ROLE}" && echo "${EXISTING}" | grep -q "${VM_SA}"; then
+      echo "    ${ROLE} already bound, skipping"
+    else
+      gcloud secrets add-iam-policy-binding "${SECRET_ID}" \
+        --project="${PROJECT_ID}" \
+        --member="serviceAccount:${VM_SA}" \
+        --role="${ROLE}" >/dev/null
+    fi
+  done
+else
+  echo "    WARNING: could not determine VM service account — grant Secret Manager roles manually"
+fi
+
+# ─── HTTPS Load Balancer ──────────────────────────────────────────────────────
+
+LB_IP_NAME="investigator-lb-ip"
+INSTANCE_GROUP="investigator-ig"
+HEALTH_CHECK="investigator-hc"
+BACKEND_SERVICE="investigator-backend"
+URL_MAP="investigator-url-map"
+HTTPS_PROXY="investigator-https-proxy"
+FORWARDING_RULE="investigator-https-fr"
+LB_DOMAIN="${LB_DOMAIN:-}"       # set externally, e.g. investigator.example.com
+CERT_NAME="investigator-cert"
+FW_HEALTH_CHECK="allow-health-check"
+HEALTH_CHECK_RANGES="35.191.0.0/16,130.211.0.0/22"
+
+echo "==> Reserving global static IP: ${LB_IP_NAME}"
+if ! gcloud compute addresses describe "${LB_IP_NAME}" --global --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute addresses create "${LB_IP_NAME}" \
+    --project="${PROJECT_ID}" \
+    --global \
+    --ip-version=IPV4
+fi
+LB_IP="$(gcloud compute addresses describe "${LB_IP_NAME}" --global --project="${PROJECT_ID}" --format='value(address)')"
+echo "    Static IP: ${LB_IP}"
+
+echo "==> Creating unmanaged instance group: ${INSTANCE_GROUP}"
+if ! gcloud compute instance-groups unmanaged describe "${INSTANCE_GROUP}" --zone="${ZONE}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute instance-groups unmanaged create "${INSTANCE_GROUP}" \
+    --project="${PROJECT_ID}" \
+    --zone="${ZONE}"
+  gcloud compute instance-groups unmanaged add-instances "${INSTANCE_GROUP}" \
+    --project="${PROJECT_ID}" \
+    --zone="${ZONE}" \
+    --instances="${VM_NAME}"
+  gcloud compute instance-groups unmanaged set-named-ports "${INSTANCE_GROUP}" \
+    --project="${PROJECT_ID}" \
+    --zone="${ZONE}" \
+    --named-ports=http:3000
+else
+  echo "    instance group already exists, skipping"
+fi
+
+echo "==> Creating health check: ${HEALTH_CHECK}"
+if ! gcloud compute health-checks describe "${HEALTH_CHECK}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute health-checks create http "${HEALTH_CHECK}" \
+    --project="${PROJECT_ID}" \
+    --port=3000 \
+    --request-path=/health \
+    --check-interval=30s \
+    --timeout=10s \
+    --healthy-threshold=2 \
+    --unhealthy-threshold=3
+else
+  echo "    health check already exists, skipping"
+fi
+
+echo "==> Creating backend service: ${BACKEND_SERVICE}"
+if ! gcloud compute backend-services describe "${BACKEND_SERVICE}" --global --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute backend-services create "${BACKEND_SERVICE}" \
+    --project="${PROJECT_ID}" \
+    --global \
+    --protocol=HTTP \
+    --port-name=http \
+    --health-checks="${HEALTH_CHECK}" \
+    --timeout=600s
+  gcloud compute backend-services add-backend "${BACKEND_SERVICE}" \
+    --project="${PROJECT_ID}" \
+    --global \
+    --instance-group="${INSTANCE_GROUP}" \
+    --instance-group-zone="${ZONE}" \
+    --balancing-mode=UTILIZATION \
+    --max-utilization=0.8
+else
+  echo "    backend service already exists, skipping"
+fi
+
+echo "==> Creating URL map: ${URL_MAP}"
+if ! gcloud compute url-maps describe "${URL_MAP}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute url-maps create "${URL_MAP}" \
+    --project="${PROJECT_ID}" \
+    --default-service="${BACKEND_SERVICE}"
+else
+  echo "    url map already exists, skipping"
+fi
+
+if [[ -n "${LB_DOMAIN}" ]]; then
+  echo "==> Creating managed SSL certificate for ${LB_DOMAIN}"
+  if ! gcloud compute ssl-certificates describe "${CERT_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud compute ssl-certificates create "${CERT_NAME}" \
+      --project="${PROJECT_ID}" \
+      --domains="${LB_DOMAIN}" \
+      --global
+  else
+    echo "    certificate already exists, skipping"
+  fi
+
+  echo "==> Creating HTTPS target proxy: ${HTTPS_PROXY}"
+  if ! gcloud compute target-https-proxies describe "${HTTPS_PROXY}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud compute target-https-proxies create "${HTTPS_PROXY}" \
+      --project="${PROJECT_ID}" \
+      --url-map="${URL_MAP}" \
+      --ssl-certificates="${CERT_NAME}"
+  else
+    echo "    HTTPS proxy already exists, skipping"
+  fi
+
+  echo "==> Creating forwarding rule: ${FORWARDING_RULE}"
+  if ! gcloud compute forwarding-rules describe "${FORWARDING_RULE}" --global --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud compute forwarding-rules create "${FORWARDING_RULE}" \
+      --project="${PROJECT_ID}" \
+      --global \
+      --address="${LB_IP_NAME}" \
+      --target-https-proxy="${HTTPS_PROXY}" \
+      --ports=443
+  else
+    echo "    forwarding rule already exists, skipping"
+  fi
+else
+  echo "    LB_DOMAIN not set — skipping HTTPS proxy and forwarding rule."
+  echo "    Set LB_DOMAIN=your.domain and re-run to complete HTTPS LB setup."
+fi
+
+echo "==> Creating health-check firewall rule: ${FW_HEALTH_CHECK}"
+if ! gcloud compute firewall-rules describe "${FW_HEALTH_CHECK}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute firewall-rules create "${FW_HEALTH_CHECK}" \
+    --project="${PROJECT_ID}" \
+    --network=default \
+    --direction=INGRESS \
+    --action=ALLOW \
+    --rules=tcp:3000 \
+    --source-ranges="${HEALTH_CHECK_RANGES}" \
+    --target-tags="${NETWORK_TAG}"
+else
+  echo "    ${FW_HEALTH_CHECK} already exists, skipping"
+fi
+
+# ─── Summary ──────────────────────────────────────────────────────────────────
+
 echo
 echo "==> Done."
 echo "    SSH (IAP tunnel, works for any gigs.com user):"
@@ -157,3 +331,11 @@ echo "      gcloud compute ssh ${VM_NAME} --zone=${ZONE} --project=${PROJECT_ID}
 echo
 echo "    Stop the VM to pause billing:"
 echo "      gcloud compute instances stop ${VM_NAME} --zone=${ZONE} --project=${PROJECT_ID}"
+echo
+echo "    Load balancer static IP: ${LB_IP}"
+if [[ -n "${LB_DOMAIN}" ]]; then
+  echo "    DNS: point ${LB_DOMAIN} A → ${LB_IP}"
+  echo "    Then set APP_URL=https://${LB_DOMAIN} in .env"
+else
+  echo "    Set LB_DOMAIN and re-run to create HTTPS proxy + forwarding rule."
+fi
